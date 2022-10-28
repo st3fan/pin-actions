@@ -8,6 +8,7 @@ import argparse
 import glob
 import os
 import re
+import sys
 from typing import Tuple
 
 from github import Github, Repository
@@ -93,7 +94,6 @@ def find_latest_release(gh: Github, org: str, user: str, version: str) -> Tuple[
 
 def suggest_pinned_action(gh: Github, action: str) -> str:
     """Take an action specifier (action/foo@v123) and return the pinned version."""
-    print("MOO Looking at action", action)
     full_user, version = action.split("@")
     if not full_user or not version:
         raise Exception(f"Don't know how to parse action {action}")
@@ -108,69 +108,51 @@ def suggest_pinned_action(gh: Github, action: str) -> str:
         return f"{full_user}@{commit} # {name} ({comment})"
 
 
-def update_workflow(gh: Github, path: str, dry_run=False):
-    with open(path) as fp:
-        workflow = yaml.load(fp, Loader=yaml.SafeLoader)
-        for job_name, job in workflow.get("jobs", {}).items():
-            for step in job.get("steps", []):
-                if action := step.get("uses"):
-                    try:
-                        if pinned_action := suggest_pinned_action(gh, action):
-                            print(f"{action} -> {pinned_action}")
-                    except Exception as e:
-                        print("Failed", e)
+def update_workflow(gh: Github, src: str, dry_run=False):
+    workflow = yaml.load(src, Loader=yaml.SafeLoader)
+    for job_name, job in workflow.get("jobs", {}).items():
+        for step in job.get("steps", []):
+            if action := step.get("uses"):
+                try:
+                    if pinned_action := suggest_pinned_action(gh, action):
+                        src = src.replace(action, pinned_action)
+                        if dry_run:
+                            print(f"Pinning {action} as {pinned_action}")
+                except Exception as e:
+                    raise SystemExit("Failed to lookup action: " + str(e))
+    return src
 
 
-def init_argparse() -> argparse.ArgumentParser:
+def main() -> None:
     parser = argparse.ArgumentParser(
         usage="%(prog)s [OPTION] [FILE]...",
         description="Pin actions to their latest release."
     )
-    parser.add_argument(
-        "-v", "--version", action="version",
-        version = f"{parser.prog} version 1.0.0",
-    )
-    parser.add_argument(
-        "-d", "--dry-run", action="store_true",
-    )
+    parser.add_argument("-v", "--version", action="version", version = f"{parser.prog} version 1.0.0")
+    parser.add_argument("-d", "--dry-run", action="store_true")
     parser.add_argument('files', nargs='*')
-    return parser
 
-
-def main() -> None:
-    parser = init_argparse()
     args = parser.parse_args()
 
     if not (github_token := os.getenv("GITHUB_TOKEN")):
         raise SystemExit("Cannot continue without valid GITHUB_TOKEN")
 
     gh = Github(github_token)
-    # TODO Check if token is good
-
-    for path in args.files:
-        update_workflow(gh, path, dry_run=args.dry_run)
-
-    #print(find_latest_release(gh, "dangoslen", "changelog-enforcer", "main"))
-    #print(find_latest_release(gh, "dangoslen", "changelog-enforcer", "v2"))
-    #print(find_latest_release(gh, "softprops", "turnstyle", "v1"))
-    #print(find_latest_release(gh, "actions", "dependency-review-action", "v2"))
-
-    #v = coerce_version("v1")
-    #print(v)
-
-    # repo = gh.get_repo("dangoslen/changelog-enforcer")
-    # releases = get_releases(repo)
-    # for v in ("v2.2.3", "v2", "v1"):
-    #     print(v, ":", find_latest_major_version(releases, coerce_version(v)))
     
-    #return
-    
-    
-    # ROOT="/Users/stefan.arentz/Aiven/terraform-provider-aiven"
+    try:
+        gh.get_user()
+    except Exception as e:
+        raise SystemExit("Cannot talk to Github: " + str(e))
 
-    # for path in glob.glob(".github/workflows/*.yml", root_dir=ROOT):
-        # print("MOO Looking at", path)
-        # check_workflow(gh, ROOT  + "/" + path)
+    if len(args.files) == 0:
+        dst = update_workflow(gh, sys.stdin.read(), args.dry_run)
+        if not args.dry_run:
+            print(dst)
+    else:
+        for path in args.files:
+            with open(path) as fp:
+                dst = update_workflow(gh, fp.read(), args.dry_run)
+                # TODO
 
 
 if __name__ == "__main__":
